@@ -1,0 +1,9 @@
+version: "1.0"
+description: "Permission policy for wassette-gkeep"
+permissions:
+  network:
+    allow:
+      - host: "keep.googleapis.com"
+  environment:
+    allow:
+      - key: "GOOGLE_KEEP_TOKEN"

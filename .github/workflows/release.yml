@@ -1,0 +1,36 @@
+name: Release
+
+on:
+  push:
+    tags: ["v*"]
+
+permissions:
+  contents: read
+  packages: write
+
+jobs:
+  build-and-publish:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: wasm32-wasip2
+      - uses: Swatinem/rust-cache@v2
+
+      - name: Build WASM component
+        run: cargo build --release --target wasm32-wasip2
+
+      - name: Install oras
+        run: curl -fsSL https://github.com/oras-project/oras/releases/download/v1.2.2/oras_1.2.2_linux_amd64.tar.gz | tar -xz -C /usr/local/bin oras
+
+      - name: Login to ghcr.io
+        run: echo "${{ secrets.GITHUB_TOKEN }}" | oras login ghcr.io -u ${{ github.actor }} --password-stdin
+
+      - name: Push to OCI registry
+        run: |
+          VERSION="${GITHUB_REF#refs/tags/v}"
+          WASM="target/wasm32-wasip2/release/wassette_gkeep.wasm"
+          IMAGE="ghcr.io/${{ github.repository }}"
+          oras push "${IMAGE}:${VERSION}" "${WASM}:application/wasm"
+          oras push "${IMAGE}:latest" "${WASM}:application/wasm"

@@ -1,0 +1,29 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: wasm32-wasip2
+      - uses: Swatinem/rust-cache@v2
+      - name: Build WASM component
+        run: cargo build --release --target wasm32-wasip2
+      - name: Run tests
+        run: cargo test
+      - name: Check formatting
+        run: |
+          rustup component add rustfmt
+          cargo fmt -- --check
+      - name: Clippy
+        run: |
+          rustup component add clippy
+          cargo clippy -- -D warnings

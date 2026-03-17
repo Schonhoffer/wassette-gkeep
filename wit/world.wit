@@ -1,0 +1,28 @@
+package component:gkeep;
+
+/// Google Keep MCP component.
+/// Requires GOOGLE_KEEP_TOKEN environment variable (OAuth2 Bearer token).
+/// Requires network access to keep.googleapis.com.
+world gkeep {
+    /// List Google Keep notes.
+    /// Pass an empty string to skip filter/page-token. Pass 0 for default page size.
+    export list-notes: func(filter: string, page-size: u32, page-token: string) -> result<string, string>;
+
+    /// Get a Google Keep note by ID (e.g. "abc123" or "notes/abc123").
+    export get-note: func(note-id: string) -> result<string, string>;
+
+    /// Create a text note. Returns the created note as JSON.
+    export create-text-note: func(title: string, body: string) -> result<string, string>;
+
+    /// Create a checklist note. Items is a JSON array of {"text":"...","checked":bool}.
+    export create-list-note: func(title: string, items-json: string) -> result<string, string>;
+
+    /// Delete a Google Keep note by ID.
+    export delete-note: func(note-id: string) -> result<string, string>;
+
+    /// Update a Google Keep note. content-json is partial Note JSON, update-mask is comma-separated fields (e.g. "title,body.text.text").
+    export update-note: func(note-id: string, content-json: string, update-mask: string) -> result<string, string>;
+
+    /// Add a new item to the top of an existing list note. Fails if the note is not a list.
+    export add-list-item: func(note-id: string, text: string, checked: bool) -> result<string, string>;
+}
