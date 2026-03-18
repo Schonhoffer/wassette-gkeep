@@ -1,13 +1,9 @@
 mod types;
 
-wit_bindgen::generate!({
-    path: "wit",
-    world: "gkeep",
-    exports: {
-        world: Component,
-    },
-});
+#[allow(warnings)]
+mod bindings;
 
+use bindings::Guest;
 use spin_sdk::http::{send, Request, Response};
 use types::*;
 
@@ -262,3 +258,5 @@ impl Guest for Component {
         })
     }
 }
+
+bindings::export!(Component with_types_in bindings);

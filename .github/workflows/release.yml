@@ -37,5 +37,11 @@ jobs:
           WASM="target/wasm32-wasip2/release/wassette_gkeep.wasm"
           IMAGE="ghcr.io/${{ github.repository_owner }}/${{ github.event.repository.name }}"
           IMAGE="${IMAGE,,}"
-          oras push "${IMAGE}:${VERSION}" "${WASM}:application/wasm"
-          oras push "${IMAGE}:latest" "${WASM}:application/wasm"
+          ANNOTATIONS=(
+            --annotation "org.opencontainers.image.source=https://github.com/${{ github.repository }}"
+            --annotation "org.opencontainers.image.description=Google Keep MCP component for Wassette"
+            --annotation "org.opencontainers.image.version=${VERSION}"
+            --annotation "org.opencontainers.image.licenses=MIT"
+          )
+          oras push "${ANNOTATIONS[@]}" "${IMAGE}:${VERSION}" "${WASM}:application/wasm"
+          oras push "${ANNOTATIONS[@]}" "${IMAGE}:latest" "${WASM}:application/wasm"

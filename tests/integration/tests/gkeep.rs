@@ -1,7 +1,8 @@
 //! Integration tests for wassette-gkeep.
 //!
-//! These tests compile the WASM component, start a mock Google Keep API server,
-//! launch `wassette` with the component, and exercise each MCP tool end-to-end.
+//! These tests compile the WASM component, download the wassette binary (if
+//! needed), start a mock Google Keep API server, launch `wassette serve
+//! --streamable-http` with the component, and exercise each MCP tool over HTTP.
 
 use axum::{
     extract::{Path, State},
@@ -13,10 +14,15 @@ use serde_json::{json, Value};
 use std::collections::HashMap;
 use std::path::PathBuf;
 use std::sync::{Arc, Mutex, OnceLock};
-use tokio::io::{AsyncBufReadExt, AsyncReadExt, AsyncWriteExt, BufReader};
 use tokio::net::TcpListener;
-use tokio::process::{Child, ChildStdin, ChildStdout, Command};
-use tokio::time::{timeout, Duration};
+use tokio::process::{Child, Command};
+use tokio::time::Duration;
+
+// ── Configuration ───────────────────────────────────────────────────
+
+const WASSETTE_VERSION: &str = "0.4.0";
+const COMPONENT_ID: &str = "wassette_gkeep";
+const MCP_TIMEOUT: Duration = Duration::from_secs(30);
 
 // ── Workspace helpers ───────────────────────────────────────────────
 
@@ -58,12 +64,125 @@ fn ensure_wasm_built() -> PathBuf {
     .clone()
 }
 
-fn wassette_available() -> bool {
-    std::process::Command::new("wassette")
-        .arg("--version")
-        .output()
-        .map(|o| o.status.success())
-        .unwrap_or(false)
+// ── Wassette binary management ──────────────────────────────────────
+
+fn ensure_wassette() -> PathBuf {
+    static BIN: OnceLock<PathBuf> = OnceLock::new();
+    BIN.get_or_init(|| {
+        let bin_dir = workspace_root().join("target").join("wassette");
+        std::fs::create_dir_all(&bin_dir).unwrap();
+
+        let binary_name = if cfg!(windows) {
+            "wassette.exe"
+        } else {
+            "wassette"
+        };
+        let binary_path = bin_dir.join(binary_name);
+
+        if binary_path.exists() {
+            if let Ok(out) = std::process::Command::new(&binary_path)
+                .arg("--version")
+                .output()
+            {
+                let stdout = String::from_utf8_lossy(&out.stdout);
+                if stdout.contains(WASSETTE_VERSION) {
+                    eprintln!("Using cached wassette v{}", WASSETTE_VERSION);
+                    return binary_path;
+                }
+            }
+            eprintln!("Cached wassette has wrong version, re-downloading…");
+        }
+
+        eprintln!("Downloading wassette v{}…", WASSETTE_VERSION);
+        download_wassette(&bin_dir);
+        assert!(
+            binary_path.exists(),
+            "wassette binary not found at {} after download",
+            binary_path.display()
+        );
+        binary_path
+    })
+    .clone()
+}
+
+#[cfg(target_os = "windows")]
+fn download_wassette(bin_dir: &std::path::Path) {
+    let arch = if cfg!(target_arch = "aarch64") {
+        "arm64"
+    } else {
+        "amd64"
+    };
+    let url = format!(
+        "https://github.com/microsoft/wassette/releases/download/v{ver}/wassette_{ver}_windows_{arch}.zip",
+        ver = WASSETTE_VERSION,
+        arch = arch,
+    );
+    let zip_path = bin_dir.join("wassette.zip");
+
+    let status = std::process::Command::new("curl")
+        .args(["-fsSL", "-o", zip_path.to_str().unwrap(), &url])
+        .status()
+        .expect("curl not found — install curl or add it to PATH");
+    assert!(status.success(), "Failed to download wassette from {}", url);
+
+    let status = std::process::Command::new("powershell")
+        .args([
+            "-NoProfile",
+            "-Command",
+            &format!(
+                "Expand-Archive -Path '{}' -DestinationPath '{}' -Force",
+                zip_path.display(),
+                bin_dir.display()
+            ),
+        ])
+        .status()
+        .expect("PowerShell not found");
+    assert!(status.success(), "Failed to extract wassette zip");
+
+    let _ = std::fs::remove_file(&zip_path);
+}
+
+#[cfg(not(target_os = "windows"))]
+fn download_wassette(bin_dir: &std::path::Path) {
+    let (os, arch) = if cfg!(target_os = "macos") {
+        (
+            "darwin",
+            if cfg!(target_arch = "aarch64") {
+                "arm64"
+            } else {
+                "amd64"
+            },
+        )
+    } else {
+        (
+            "linux",
+            if cfg!(target_arch = "aarch64") {
+                "arm64"
+            } else {
+                "amd64"
+            },
+        )
+    };
+    let url = format!(
+        "https://github.com/microsoft/wassette/releases/download/v{ver}/wassette_{ver}_{os}_{arch}.tar.gz",
+        ver = WASSETTE_VERSION,
+        os = os,
+        arch = arch,
+    );
+
+    let status = std::process::Command::new("sh")
+        .args([
+            "-c",
+            &format!("curl -fsSL '{}' | tar -xz -C '{}'", url, bin_dir.display()),
+        ])
+        .status()
+        .expect("Failed to run curl | tar");
+    assert!(status.success(), "Failed to download wassette from {}", url);
+}
+
+fn find_free_port() -> u16 {
+    let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+    listener.local_addr().unwrap().port()
 }
 
 // ── Mock Google Keep API ────────────────────────────────────────────
@@ -197,90 +316,190 @@ async fn start_mock(state: MockState) -> (u16, tokio::task::JoinHandle<()>) {
     (port, handle)
 }
 
-// ── MCP client over stdio ───────────────────────────────────────────
+// ── MCP client over streamable HTTP ─────────────────────────────────
 
 struct McpClient {
     child: Child,
-    stdin: ChildStdin,
-    reader: BufReader<ChildStdout>,
+    http: reqwest::Client,
+    mcp_url: String,
+    session_id: Option<String>,
     next_id: u64,
+    component_dir: PathBuf,
 }
 
-const MCP_TIMEOUT: Duration = Duration::from_secs(30);
-
 impl McpClient {
-    async fn start(wasm_path: &std::path::Path, mock_port: u16) -> Self {
+    async fn start(
+        wassette: &std::path::Path,
+        wasm_path: &std::path::Path,
+        mock_port: u16,
+    ) -> Self {
         let base_url = format!("http://127.0.0.1:{}/v1", mock_port);
-        let net_allow = format!("127.0.0.1:{}", mock_port);
+        let net_host = format!("127.0.0.1:{}", mock_port);
+        let mcp_port = find_free_port();
 
-        let mut child = Command::new("wassette")
+        // Create an isolated component directory for this test run
+        let component_dir =
+            std::env::temp_dir().join(format!("wassette-e2e-{}-{}", std::process::id(), mcp_port,));
+        std::fs::create_dir_all(&component_dir).expect("Failed to create temp component dir");
+        let dir_str = component_dir.to_str().unwrap();
+
+        // Load the WASM component
+        let wasm_uri = format!("file://{}", wasm_path.display());
+        let out = std::process::Command::new(wassette)
+            .args(["component", "load", "--component-dir", dir_str, &wasm_uri])
+            .output()
+            .expect("Failed to run `wassette component load`");
+        assert!(
+            out.status.success(),
+            "wassette component load failed:\n{}",
+            String::from_utf8_lossy(&out.stderr)
+        );
+
+        // Grant environment-variable permissions
+        for key in &["GOOGLE_KEEP_TOKEN", "GKEEP_API_BASE_URL"] {
+            let out = std::process::Command::new(wassette)
+                .args([
+                    "permission",
+                    "grant",
+                    "environment-variable",
+                    "--component-dir",
+                    dir_str,
+                    COMPONENT_ID,
+                    key,
+                ])
+                .output()
+                .expect("Failed to grant env-var permission");
+            assert!(
+                out.status.success(),
+                "permission grant env-var {} failed:\n{}",
+                key,
+                String::from_utf8_lossy(&out.stderr)
+            );
+        }
+
+        // Grant network permission to reach the mock server
+        let out = std::process::Command::new(wassette)
+            .args([
+                "permission",
+                "grant",
+                "network",
+                "--component-dir",
+                dir_str,
+                COMPONENT_ID,
+                &net_host,
+            ])
+            .output()
+            .expect("Failed to grant network permission");
+        assert!(
+            out.status.success(),
+            "permission grant network failed:\n{}",
+            String::from_utf8_lossy(&out.stderr)
+        );
+
+        // Start the MCP server with streamable HTTP transport
+        let bind_addr = format!("127.0.0.1:{}", mcp_port);
+        let child = Command::new(wassette)
             .args([
                 "serve",
-                "--stdio",
-                "--load",
-                wasm_path.to_str().unwrap(),
+                "--streamable-http",
+                "--bind-address",
+                &bind_addr,
+                "--component-dir",
+                dir_str,
+                "--disable-builtin-tools",
                 "--env",
-                "GOOGLE_KEEP_TOKEN",
+                &format!("GOOGLE_KEEP_TOKEN=test-token-12345"),
                 "--env",
-                "GKEEP_API_BASE_URL",
-                "--net-allow",
-                &net_allow,
+                &format!("GKEEP_API_BASE_URL={}", base_url),
             ])
-            .env("GOOGLE_KEEP_TOKEN", "test-token-12345")
-            .env("GKEEP_API_BASE_URL", &base_url)
-            .stdin(std::process::Stdio::piped())
-            .stdout(std::process::Stdio::piped())
+            .stdin(std::process::Stdio::null())
+            .stdout(std::process::Stdio::null())
             .stderr(std::process::Stdio::piped())
             .spawn()
-            .expect("Failed to start wassette — is it installed?");
+            .expect("Failed to start wassette serve");
 
-        let stdin = child.stdin.take().unwrap();
-        let stdout = child.stdout.take().unwrap();
+        let mcp_url = format!("http://127.0.0.1:{}/mcp", mcp_port);
+        let health_url = format!("http://127.0.0.1:{}/health", mcp_port);
+        let http = reqwest::Client::new();
+
+        // Wait for the server to be ready
+        let deadline = tokio::time::Instant::now() + MCP_TIMEOUT;
+        loop {
+            if tokio::time::Instant::now() > deadline {
+                panic!(
+                    "wassette server did not become ready within {:?}",
+                    MCP_TIMEOUT
+                );
+            }
+            match http.get(&health_url).send().await {
+                Ok(resp) if resp.status().is_success() => break,
+                _ => tokio::time::sleep(Duration::from_millis(100)).await,
+            }
+        }
 
         McpClient {
             child,
-            stdin,
-            reader: BufReader::new(stdout),
+            http,
+            mcp_url,
+            session_id: None,
             next_id: 1,
+            component_dir,
         }
     }
 
-    async fn send_message(&mut self, msg: &Value) {
-        let json = serde_json::to_vec(msg).unwrap();
-        let header = format!("Content-Length: {}\r\n\r\n", json.len());
-        self.stdin.write_all(header.as_bytes()).await.unwrap();
-        self.stdin.write_all(&json).await.unwrap();
-        self.stdin.flush().await.unwrap();
-    }
+    /// Send a JSON-RPC message and parse the response.
+    ///
+    /// Handles both `application/json` and `text/event-stream` (SSE) responses as
+    /// allowed by the MCP Streamable HTTP transport.
+    async fn send_rpc(&mut self, body: &Value) -> Option<Value> {
+        let mut req = self
+            .http
+            .post(&self.mcp_url)
+            .header("Content-Type", "application/json")
+            .header("Accept", "application/json, text/event-stream")
+            .json(body);
 
-    async fn read_message(&mut self) -> Value {
-        let mut content_length: Option<usize> = None;
-        loop {
-            let mut line = String::new();
-            self.reader.read_line(&mut line).await.unwrap();
-            let trimmed = line.trim();
-            if trimmed.is_empty() {
-                break;
-            }
-            if let Some(len_str) = trimmed.strip_prefix("Content-Length:") {
-                content_length = Some(len_str.trim().parse().unwrap());
-            }
+        if let Some(ref sid) = self.session_id {
+            req = req.header("Mcp-Session-Id", sid);
         }
-        let len = content_length.expect("Missing Content-Length header");
-        let mut buf = vec![0u8; len];
-        self.reader.read_exact(&mut buf).await.unwrap();
-        serde_json::from_slice(&buf).unwrap()
-    }
 
-    async fn read_response(&mut self, expected_id: u64) -> Value {
-        loop {
-            let msg = timeout(MCP_TIMEOUT, self.read_message())
-                .await
-                .expect("Timed out waiting for MCP response");
-            if msg.get("id").and_then(|v| v.as_u64()) == Some(expected_id) {
-                return msg;
-            }
+        let resp = tokio::time::timeout(MCP_TIMEOUT, req.send())
+            .await
+            .expect("MCP request timed out")
+            .expect("MCP HTTP request failed");
+
+        // Capture session ID if present
+        if let Some(sid) = resp.headers().get("mcp-session-id") {
+            self.session_id = Some(sid.to_str().unwrap().to_string());
         }
+
+        let status = resp.status();
+        if status == reqwest::StatusCode::ACCEPTED {
+            return None; // Notification acknowledged
+        }
+
+        let content_type = resp
+            .headers()
+            .get("content-type")
+            .and_then(|v| v.to_str().ok())
+            .unwrap_or("")
+            .to_string();
+
+        let text = resp.text().await.unwrap();
+
+        let json_val = if content_type.contains("text/event-stream") {
+            // Parse SSE: last `data:` line containing valid JSON
+            text.lines()
+                .filter_map(|line| line.strip_prefix("data:").map(str::trim_start))
+                .filter_map(|data| serde_json::from_str::<Value>(data).ok())
+                .last()
+                .unwrap_or_else(|| panic!("No valid JSON in SSE response:\n{}", text))
+        } else {
+            serde_json::from_str(&text)
+                .unwrap_or_else(|e| panic!("Invalid JSON response: {}\n{}", e, text))
+        };
+
+        Some(json_val)
     }
 
     async fn request(&mut self, method: &str, params: Value) -> Value {
@@ -292,8 +511,9 @@ impl McpClient {
             "method": method,
             "params": params
         });
-        self.send_message(&msg).await;
-        self.read_response(id).await
+        self.send_rpc(&msg)
+            .await
+            .unwrap_or_else(|| panic!("Expected response for {} but got 202", method))
     }
 
     async fn initialize(&mut self) -> Value {
@@ -308,7 +528,7 @@ impl McpClient {
             )
             .await;
         // Acknowledge with initialized notification (no response expected)
-        self.send_message(&json!({
+        self.send_rpc(&json!({
             "jsonrpc": "2.0",
             "method": "notifications/initialized"
         }))
@@ -328,17 +548,31 @@ impl McpClient {
     }
 
     /// Extract the text content from an MCP tool-call response.
+    ///
+    /// The WIT interface returns `result<string, string>`, so wassette wraps the
+    /// value as `{"ok":"<json>"}` or `{"err":"<msg>"}`.  This helper unwraps the
+    /// `ok` payload and panics on errors.
     fn tool_text(response: &Value) -> String {
-        response["result"]["content"][0]["text"]
+        let raw = response["result"]["content"][0]["text"]
             .as_str()
-            .unwrap_or_default()
-            .to_string()
+            .unwrap_or_default();
+        let wrapper: Value =
+            serde_json::from_str(raw).unwrap_or_else(|e| panic!("bad tool text: {e}\n{raw}"));
+        if let Some(ok) = wrapper.get("ok").and_then(|v| v.as_str()) {
+            ok.to_string()
+        } else if let Some(err) = wrapper.get("err").and_then(|v| v.as_str()) {
+            panic!("Tool returned error: {}", err)
+        } else {
+            // Fallback: return the raw text as-is (no result wrapper)
+            raw.to_string()
+        }
     }
 }
 
 impl Drop for McpClient {
     fn drop(&mut self) {
         let _ = self.child.start_kill();
+        let _ = std::fs::remove_dir_all(&self.component_dir);
     }
 }
 
@@ -351,10 +585,7 @@ struct TestFixture {
 }
 
 async fn setup(initial_notes: Vec<(&str, Value)>) -> TestFixture {
-    if !wassette_available() {
-        panic!("wassette CLI not found — install it to run integration tests");
-    }
-
+    let wassette = ensure_wassette();
     let wasm = ensure_wasm_built();
     let state = MockState::new();
     for (id, note) in &initial_notes {
@@ -362,10 +593,9 @@ async fn setup(initial_notes: Vec<(&str, Value)>) -> TestFixture {
     }
 
     let (port, mock_handle) = start_mock(state.clone()).await;
-    // Give the mock listener a moment to be ready
     tokio::time::sleep(Duration::from_millis(100)).await;
 
-    let mut client = McpClient::start(&wasm, port).await;
+    let mut client = McpClient::start(&wassette, &wasm, port).await;
     let init_resp = client.initialize().await;
     assert!(
         init_resp.get("result").is_some(),
@@ -398,7 +628,10 @@ async fn test_list_notes_empty() {
         .await;
     let text = McpClient::tool_text(&resp);
     let parsed: Value = serde_json::from_str(&text).expect("response should be valid JSON");
-    assert_eq!(parsed["notes"].as_array().unwrap().len(), 0);
+    let notes_arr = parsed["notes"]
+        .as_array()
+        .unwrap_or_else(|| panic!("Expected notes array in: {}", text));
+    assert_eq!(notes_arr.len(), 0);
 }
 
 #[tokio::test]
