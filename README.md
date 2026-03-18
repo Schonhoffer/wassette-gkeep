@@ -21,20 +21,6 @@ GOOGLE_KEEP_TOKEN=ya29.xxx wassette serve --stdio \
   --policy policy.yaml
 ```
 
-## Docker
-
-Run Wassette + this component in a container:
-
-```sh
-docker run --rm -i \
-  -e GOOGLE_KEEP_TOKEN=ya29.xxx \
-  ghcr.io/microsoft/wassette:latest \
-  serve --stdio \
-  --load oci://ghcr.io/schonhoffer/wassette-gkeep:latest \
-  --env GOOGLE_KEEP_TOKEN \
-  --net-allow keep.googleapis.com
-```
-
 ## MCP Client Config
 
 Configure your AI agent to use this as an MCP server:
@@ -124,7 +110,7 @@ spec:
     spec:
       containers:
         - name: wassette
-          image: ghcr.io/microsoft/wassette:latest
+          image: your-registry/wassette:latest  # no official image; build your own
           args:
             - serve
             - --streamable-http
