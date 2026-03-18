@@ -31,6 +31,7 @@ jobs:
         run: |
           VERSION="${GITHUB_REF#refs/tags/v}"
           WASM="target/wasm32-wasip2/release/wassette_gkeep.wasm"
-          IMAGE="ghcr.io/${{ github.repository }}"
+          IMAGE="ghcr.io/${{ github.repository_owner }}/${{ github.event.repository.name }}"
+          IMAGE="${IMAGE,,}"
           oras push "${IMAGE}:${VERSION}" "${WASM}:application/wasm"
           oras push "${IMAGE}:latest" "${WASM}:application/wasm"
