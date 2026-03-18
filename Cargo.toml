@@ -25,3 +25,4 @@ lto = true
 package = "component:gkeep"
 
 [workspace]
+members = [".", "tests/integration"]

@@ -1,6 +1,6 @@
 # wassette-gkeep
 
-Google Keep MCP component for [Wassette](https://github.com/microsoft/wassette). Provides 5 tools: list notes, get note, create text note, create checklist note, delete note.
+Google Keep MCP component for [Wassette](https://github.com/microsoft/wassette). Provides 7 tools: list notes, get note, create text note, create checklist note, delete note, update note, and add list item.
 
 ## Quick Start
 
@@ -67,6 +67,8 @@ Configure your AI agent to use this as an MCP server:
 | `create-text-note` | Create a note with a title and text body |
 | `create-list-note` | Create a checklist note (items as JSON array) |
 | `delete-note` | Delete a note by ID |
+| `update-note` | Update a note by ID with partial JSON and an update mask |
+| `add-list-item` | Add a new item to the top of an existing list note |
 
 ## Building from Source
 

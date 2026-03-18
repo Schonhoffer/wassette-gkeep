@@ -7,3 +7,4 @@ permissions:
   environment:
     allow:
       - key: "GOOGLE_KEEP_TOKEN"
+      - key: "GKEEP_API_BASE_URL"

@@ -1,6 +1,5 @@
 mod types;
 
-#[cfg(target_arch = "wasm32")]
 wit_bindgen::generate!({
     path: "wit",
     world: "gkeep",
@@ -9,24 +8,21 @@ wit_bindgen::generate!({
     },
 });
 
-#[cfg(target_arch = "wasm32")]
 use spin_sdk::http::{send, Request, Response};
-#[cfg(target_arch = "wasm32")]
 use types::*;
 
-#[cfg(target_arch = "wasm32")]
-const BASE_URL: &str = "https://keep.googleapis.com/v1";
+fn base_url() -> String {
+    std::env::var("GKEEP_API_BASE_URL")
+        .unwrap_or_else(|_| "https://keep.googleapis.com/v1".to_string())
+}
 
-#[cfg(target_arch = "wasm32")]
 struct Component;
 
-#[cfg(target_arch = "wasm32")]
 fn token() -> Result<String, String> {
     std::env::var("GOOGLE_KEEP_TOKEN")
         .map_err(|_| "GOOGLE_KEEP_TOKEN environment variable not set".to_string())
 }
 
-#[cfg(target_arch = "wasm32")]
 fn url_encode(s: &str) -> String {
     let mut result = String::with_capacity(s.len());
     for byte in s.bytes() {
@@ -42,16 +38,18 @@ fn url_encode(s: &str) -> String {
     result
 }
 
-#[cfg(target_arch = "wasm32")]
 fn validate_note_id(note_id: &str) -> Result<&str, String> {
     let id = note_id.strip_prefix("notes/").unwrap_or(note_id);
-    if id.is_empty() || !id.chars().all(|c| c.is_alphanumeric() || c == '-' || c == '_') {
+    if id.is_empty()
+        || !id
+            .chars()
+            .all(|c| c.is_alphanumeric() || c == '-' || c == '_')
+    {
         return Err(format!("Invalid note ID: {}", note_id));
     }
     Ok(id)
 }
 
-#[cfg(target_arch = "wasm32")]
 fn auth_get(url: &str, token: &str) -> Request {
     Request::builder()
         .method(spin_sdk::http::Method::Get)
@@ -60,7 +58,6 @@ fn auth_get(url: &str, token: &str) -> Request {
         .build()
 }
 
-#[cfg(target_arch = "wasm32")]
 fn auth_post(url: &str, token: &str, body: &str) -> Request {
     Request::builder()
         .method(spin_sdk::http::Method::Post)
@@ -71,7 +68,6 @@ fn auth_post(url: &str, token: &str, body: &str) -> Request {
         .build()
 }
 
-#[cfg(target_arch = "wasm32")]
 fn auth_patch(url: &str, token: &str, body: &str) -> Request {
     Request::builder()
         .method(spin_sdk::http::Method::Patch)
@@ -82,7 +78,6 @@ fn auth_patch(url: &str, token: &str, body: &str) -> Request {
         .build()
 }
 
-#[cfg(target_arch = "wasm32")]
 fn auth_delete(url: &str, token: &str) -> Request {
     Request::builder()
         .method(spin_sdk::http::Method::Delete)
@@ -91,7 +86,6 @@ fn auth_delete(url: &str, token: &str) -> Request {
         .build()
 }
 
-#[cfg(target_arch = "wasm32")]
 fn check(response: &Response) -> Result<(), String> {
     let status = *response.status();
     if !(200..300).contains(&status) {
@@ -101,17 +95,15 @@ fn check(response: &Response) -> Result<(), String> {
     Ok(())
 }
 
-#[cfg(target_arch = "wasm32")]
 fn body_string(response: &Response) -> String {
     String::from_utf8_lossy(response.body()).into_owned()
 }
 
-#[cfg(target_arch = "wasm32")]
 impl Guest for Component {
     fn list_notes(filter: String, page_size: u32, page_token: String) -> Result<String, String> {
         spin_executor::run(async {
             let token = token()?;
-            let mut url = format!("{}/notes", BASE_URL);
+            let mut url = format!("{}/notes", base_url());
             let mut params = Vec::new();
             if page_size > 0 {
                 params.push(format!("pageSize={}", page_size));
@@ -126,7 +118,9 @@ impl Guest for Component {
                 url.push('?');
                 url.push_str(&params.join("&"));
             }
-            let resp = send(auth_get(&url, &token)).await.map_err(|e| e.to_string())?;
+            let resp = send(auth_get(&url, &token))
+                .await
+                .map_err(|e| e.to_string())?;
             check(&resp)?;
             Ok(body_string(&resp))
         })
@@ -136,8 +130,10 @@ impl Guest for Component {
         spin_executor::run(async {
             let token = token()?;
             let id = validate_note_id(&note_id)?;
-            let url = format!("{}/notes/{}", BASE_URL, id);
-            let resp = send(auth_get(&url, &token)).await.map_err(|e| e.to_string())?;
+            let url = format!("{}/notes/{}", base_url(), id);
+            let resp = send(auth_get(&url, &token))
+                .await
+                .map_err(|e| e.to_string())?;
             check(&resp)?;
             Ok(body_string(&resp))
         })
@@ -155,8 +151,10 @@ impl Guest for Component {
                 ..Default::default()
             };
             let json = serde_json::to_string(&note).map_err(|e| e.to_string())?;
-            let url = format!("{}/notes", BASE_URL);
-            let resp = send(auth_post(&url, &token, &json)).await.map_err(|e| e.to_string())?;
+            let url = format!("{}/notes", base_url());
+            let resp = send(auth_post(&url, &token, &json))
+                .await
+                .map_err(|e| e.to_string())?;
             check(&resp)?;
             Ok(body_string(&resp))
         })
@@ -178,8 +176,10 @@ impl Guest for Component {
                 ..Default::default()
             };
             let json = serde_json::to_string(&note).map_err(|e| e.to_string())?;
-            let url = format!("{}/notes", BASE_URL);
-            let resp = send(auth_post(&url, &token, &json)).await.map_err(|e| e.to_string())?;
+            let url = format!("{}/notes", base_url());
+            let resp = send(auth_post(&url, &token, &json))
+                .await
+                .map_err(|e| e.to_string())?;
             check(&resp)?;
             Ok(body_string(&resp))
         })
@@ -189,22 +189,30 @@ impl Guest for Component {
         spin_executor::run(async {
             let token = token()?;
             let id = validate_note_id(&note_id)?;
-            let url = format!("{}/notes/{}", BASE_URL, id);
-            let resp = send(auth_delete(&url, &token)).await.map_err(|e| e.to_string())?;
+            let url = format!("{}/notes/{}", base_url(), id);
+            let resp = send(auth_delete(&url, &token))
+                .await
+                .map_err(|e| e.to_string())?;
             check(&resp)?;
             Ok(body_string(&resp))
         })
     }
 
-    fn update_note(note_id: String, content_json: String, update_mask: String) -> Result<String, String> {
+    fn update_note(
+        note_id: String,
+        content_json: String,
+        update_mask: String,
+    ) -> Result<String, String> {
         spin_executor::run(async {
             let token = token()?;
             let id = validate_note_id(&note_id)?;
-            let mut url = format!("{}/notes/{}", BASE_URL, id);
+            let mut url = format!("{}/notes/{}", base_url(), id);
             if !update_mask.is_empty() {
                 url.push_str(&format!("?updateMask={}", url_encode(&update_mask)));
             }
-            let resp = send(auth_patch(&url, &token, &content_json)).await.map_err(|e| e.to_string())?;
+            let resp = send(auth_patch(&url, &token, &content_json))
+                .await
+                .map_err(|e| e.to_string())?;
             check(&resp)?;
             Ok(body_string(&resp))
         })
@@ -214,14 +222,18 @@ impl Guest for Component {
         spin_executor::run(async {
             let token = token()?;
             let id = validate_note_id(&note_id)?;
-            let url = format!("{}/notes/{}", BASE_URL, id);
+            let url = format!("{}/notes/{}", base_url(), id);
 
-            let resp = send(auth_get(&url, &token)).await.map_err(|e| e.to_string())?;
+            let resp = send(auth_get(&url, &token))
+                .await
+                .map_err(|e| e.to_string())?;
             check(&resp)?;
             let mut note: Note = serde_json::from_str(&body_string(&resp))
                 .map_err(|e| format!("Failed to parse note: {}", e))?;
 
-            let list = note.body.as_mut()
+            let list = note
+                .body
+                .as_mut()
                 .and_then(|b| b.list.as_mut())
                 .ok_or_else(|| "Note is not a list".to_string())?;
 
@@ -242,10 +254,11 @@ impl Guest for Component {
             };
             let json = serde_json::to_string(&patch).map_err(|e| e.to_string())?;
             let patch_url = format!("{}?updateMask={}", url, url_encode("body.list.listItems"));
-            let resp = send(auth_patch(&patch_url, &token, &json)).await.map_err(|e| e.to_string())?;
+            let resp = send(auth_patch(&patch_url, &token, &json))
+                .await
+                .map_err(|e| e.to_string())?;
             check(&resp)?;
             Ok(body_string(&resp))
         })
     }
 }
-

@@ -84,6 +84,7 @@ pub struct Permission {
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "SCREAMING_SNAKE_CASE")]
+#[allow(clippy::enum_variant_names)]
 pub enum Role {
     RoleUnspecified,
     Owner,
@@ -154,7 +155,10 @@ mod tests {
         let list = note.body.unwrap().list.unwrap();
         let items = list.list_items.unwrap();
         assert_eq!(items.len(), 2);
-        assert_eq!(items[0].text.as_ref().unwrap().text.as_ref().unwrap(), "Milk");
+        assert_eq!(
+            items[0].text.as_ref().unwrap().text.as_ref().unwrap(),
+            "Milk"
+        );
         assert_eq!(items[1].checked, Some(true));
     }
 

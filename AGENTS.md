@@ -1,5 +1,7 @@
 Google Keep MCP as a Wassette (WASM) component. No native binary, no MCP protocol code — Wassette handles all of that.
 
+Keep the readme.md update to date.
+
 ## How it works
 
 The crate compiles to a `cdylib` targeting `wasm32-wasip2`. The WIT file (`wit/world.wit`) defines exported functions. Each function becomes an MCP tool when loaded by Wassette. HTTP goes through `spin-sdk` (WASI HTTP), not `reqwest`.
