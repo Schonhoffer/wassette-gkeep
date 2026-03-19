@@ -25,23 +25,54 @@ jobs:
       - name: Build WASM component
         run: cargo build --release --target wasm32-wasip2
 
-      - name: Install oras
-        run: curl -fsSL https://github.com/oras-project/oras/releases/download/v1.2.2/oras_1.2.2_linux_amd64.tar.gz | tar -xz -C /usr/local/bin oras
+      - name: Install tools
+        run: |
+          curl -fsSL https://github.com/oras-project/oras/releases/download/v1.2.2/oras_1.2.2_linux_amd64.tar.gz | tar -xz -C /usr/local/bin oras
+          curl -fsSL https://github.com/bytecodealliance/wasm-tools/releases/download/v1.228.0/wasm-tools-1.228.0-x86_64-linux.tar.gz | tar -xz --strip-components=1 -C /usr/local/bin wasm-tools-1.228.0-x86_64-linux/wasm-tools
 
       - name: Login to ghcr.io
         run: echo "${{ secrets.GITHUB_TOKEN }}" | oras login ghcr.io -u ${{ github.actor }} --password-stdin
 
-      - name: Push to OCI registry
+      - name: Build WASM config and push to OCI registry
         run: |
           VERSION="${GITHUB_REF#refs/tags/v}"
           WASM="target/wasm32-wasip2/release/wassette_gkeep.wasm"
           IMAGE="ghcr.io/${{ github.repository_owner }}/${{ github.event.repository.name }}"
           IMAGE="${IMAGE,,}"
+
+          # Compute layer digest for config
+          LAYER_DIGEST="sha256:$(sha256sum "$WASM" | cut -d' ' -f1)"
+
+          # Extract exports and imports from the component WIT
+          WIT=$(wasm-tools component wit "$WASM")
+          EXPORTS=$(echo "$WIT" | grep -oP '^\s+export \K[^;]+' | sed 's/: func.*$//' | jq -R -s 'split("\n") | map(select(length > 0) | gsub("^\\s+|\\s+$";""))')
+          IMPORTS=$(echo "$WIT" | grep -oP '^\s+import \K[^;]+' | jq -R -s 'split("\n") | map(select(length > 0) | gsub("^\\s+|\\s+$";""))')
+
+          # Build config matching application/vnd.wasm.config.v0+json format
+          CREATED=$(date -u +%Y-%m-%dT%H:%M:%S.%NZ)
+          jq -n \
+            --arg created "$CREATED" \
+            --arg digest "$LAYER_DIGEST" \
+            --argjson exports "$EXPORTS" \
+            --argjson imports "$IMPORTS" \
+            '{
+              created: $created,
+              author: null,
+              architecture: "wasm",
+              os: "wasip2",
+              layerDigests: [$digest],
+              component: {
+                exports: $exports,
+                imports: $imports,
+                target: null
+              }
+            }' > wasm-config.json
+
           ANNOTATIONS=(
             --annotation "org.opencontainers.image.source=https://github.com/${{ github.repository }}"
             --annotation "org.opencontainers.image.description=Google Keep MCP component for Wassette"
             --annotation "org.opencontainers.image.version=${VERSION}"
             --annotation "org.opencontainers.image.licenses=MIT"
           )
-          oras push "${ANNOTATIONS[@]}" "${IMAGE}:${VERSION}" "${WASM}:application/wasm"
-          oras push "${ANNOTATIONS[@]}" "${IMAGE}:latest" "${WASM}:application/wasm"
+          oras push "${ANNOTATIONS[@]}" --config wasm-config.json:application/vnd.wasm.config.v0+json "${IMAGE}:${VERSION}" "${WASM}:application/wasm"
+          oras push "${ANNOTATIONS[@]}" --config wasm-config.json:application/vnd.wasm.config.v0+json "${IMAGE}:latest" "${WASM}:application/wasm"
